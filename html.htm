@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Playables SDK -->
+<script>// Playables SDK v1.0.0
+// Game lifecycle bridge: rAF-based game-ready detection + event communication
+(function() {
+  'use strict';
+
+  var HANDLER_NAME = 'playablesGameEventHandler';
+  var ANDROID_BRIDGE_NAME = '_MetaPlayablesBridge';
+  var RAF_FRAME_THRESHOLD = 3;
+
+  var gameReadySent = false;
+  var firstInteractionSent = false;
+  var errorSent = false;
+  var frameCount = 0;
+  var originalRAF = window.requestAnimationFrame;
+
+  // --- Transport Layer ---
+
+  function hasIOSBridge() {
+    return !!(window.webkit &&
+              window.webkit.messageHandlers &&
+              window.webkit.messageHandlers[HANDLER_NAME]);
+  }
+
+  function hasAndroidBridge() {
+    return !!(window[ANDROID_BRIDGE_NAME] &&
+              typeof window[ANDROID_BRIDGE_NAME].postEvent === 'function');
+  }
+
+  function isInIframe() {
+    return !!(window.parent && window.parent !== window);
+  }
+
+  function sendEvent(eventName, payload) {
+    var message = {
+      type: eventName,
+      payload: payload || {},
+      timestamp: Date.now()
+    };
+
+    if (hasIOSBridge()) {
+      try {
+        window.webkit.messageHandlers[HANDLER_NAME].postMessage(message);
+      } catch (e) { /* ignore */ }
+      return;
+    }
+
+    if (hasAndroidBridge()) {
+    try {
+      var p = payload || {};
+      p.__secureToken = window.__fbAndroidBridgeAuthToken || '';
+      window[ANDROID_BRIDGE_NAME].postEvent(
+        eventName,
+        JSON.stringify(p)
+      );
+    } catch (e) { /* ignore */ }
+    return;
+  }
+
+    if (isInIframe()) {
+      try {
+        window.parent.postMessage(message, '*');
+      } catch (e) { /* ignore */ }
+      return;
+    }
+  }
+
+  // --- rAF Game-Ready Detection ---
+
+  function onFrame() {
+    if (gameReadySent) return;
+
+    frameCount++;
+    if (frameCount >= RAF_FRAME_THRESHOLD) {
+      gameReadySent = true;
+      sendEvent('game_ready', {
+        frame_count: frameCount,
+        detected_at: Date.now()
+      });
+      return;
+    }
+
+    originalRAF.call(window, onFrame);
+  }
+
+  if (originalRAF) {
+    window.requestAnimationFrame = function(callback) {
+      if (!gameReadySent) {
+        return originalRAF.call(window, function(timestamp) {
+          frameCount++;
+          if (frameCount >= RAF_FRAME_THRESHOLD && !gameReadySent) {
+            gameReadySent = true;
+            sendEvent('game_ready', {
+              frame_count: frameCount,
+              detected_at: Date.now()
+            });
+          }
+          callback(timestamp);
+        });
+      }
+      return originalRAF.call(window, callback);
+    };
+  }
+
+  // --- First User Interaction Detection ---
+
+  function setupFirstInteractionDetection() {
+    var events = ['touchstart', 'mousedown', 'keydown'];
+
+    function onFirstInteraction() {
+      if (firstInteractionSent) return;
+      firstInteractionSent = true;
+      sendEvent('user_interaction_start', null);
+
+      for (var i = 0; i < events.length; i++) {
+        document.removeEventListener(events[i], onFirstInteraction, true);
+      }
+    }
+
+    for (var i = 0; i < events.length; i++) {
+      document.addEventListener(events[i], onFirstInteraction, true);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupFirstInteractionDetection);
+  } else {
+    setupFirstInteractionDetection();
+  }
+
+  // --- Auto Error Capture ---
+
+  window.addEventListener('error', function(event) {
+    if (errorSent) return;
+    errorSent = true;
+    sendEvent('error', {
+      message: event.message || 'Unknown error',
+      source: event.filename || '',
+      lineno: event.lineno || 0,
+      colno: event.colno || 0,
+      auto_captured: true
+    });
+  });
+
+  window.addEventListener('unhandledrejection', function(event) {
+    if (errorSent) return;
+    errorSent = true;
+    var reason = event.reason;
+    sendEvent('error', {
+      message: (reason instanceof Error) ? reason.message : String(reason),
+      type: 'unhandled_promise_rejection',
+      auto_captured: true
+    });
+  });
+
+  // --- Public API ---
+
+  window.playablesSDK = {
+    complete: function(score) {
+      sendEvent('game_ended', {
+        score: score,
+        completed: true
+      });
+    },
+
+    error: function(message) {
+      if (errorSent) return;
+      errorSent = true;
+      sendEvent('error', {
+        message: message || 'Unknown error',
+        auto_captured: false
+      });
+    },
+
+    sendEvent: function(eventName, payload) {
+      if (!eventName || typeof eventName !== 'string') return;
+      sendEvent(eventName, payload);
+    }
+  };
+
+  // Kick off rAF detection in case no game code calls rAF immediately
+  if (originalRAF) {
+    originalRAF.call(window, onFrame);
+  }
+})();</script>
+<script>window.Intl=window.Intl||{};Intl.t=function(s){return(Intl._locale&&Intl._locale[s])||s;};</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LearnBridge — Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{ --primary:#1e3a8a; --accent:#0d9488; --bg:#f8fafc; }
+  html{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif}
+  :focus-visible{outline:3px solid #0d9488; outline-offset:2px; border-radius:6px}
+  .min-tap{min-height:44px; min-width:44px}
+  .card{transition:box-shadow .2s, transform .12s}
+  .card:hover{box-shadow:0 10px 24px -12px rgba(2,6,23,.25)}
+  button:active{transform:scale(.98)}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  /* high contrast */
+  .hc body, body.hc{background:#000!important;color:#fff!important}
+  body.hc header, body.hc .bg-white, body.hc .card, body.hc .bg-slate-50{background:#000!important;color:#fff!important;border-color:#fff!important}
+  body.hc .border-slate-200, body.hc .border{border-color:#fff!important}
+  body.hc input, body.hc select, body.hc textarea, body.hc button{background:#000!important;color:#fff!important;border-color:#fff!important}
+  body.hc a{color:#7dd3fc!important}
+  body.hc .text-slate-500, body.hc .text-slate-600, body.hc .text-slate-700{color:#e5e7eb!important}
+  body.hc .bg-slate-100{background:#111!important}
+  body.hc .bg-[#1e3a8a]{background:#fff!important;color:#000!important}
+  body.hc .text-white{color:#000!important}
+  body.hc .shadow, body.hc .shadow-sm, body.hc .shadow-xl{box-shadow:none!important}
+  @media (prefers-reduced-motion: reduce){ *{animation:none!important;transition:none!important} }
+</style>
+</head>
+<body id="app" class="bg-[#f8fafc] text-slate-900">
+<a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-white px-3 py-2 rounded-lg shadow">Skip to content</a>
+
+<header class="sticky top-0 z-40 border-b border-slate-200 bg-white/85 backdrop-blur supports-[backdrop-filter]:bg-white/60">
+  <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-16 flex items-center gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-[#1e3a8a] text-white grid place-items-center font-bold">LB</div>
+      <span class="text-lg font-semibold tracking-tight">LearnBridge</span>
+    </div>
+    <nav aria-label="Dashboards" class="ml-2 sm:ml-6 flex-1">
+      <ul role="tablist" class="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1">
+        <li><button id="tab-learner" role="tab" aria-selected="true" aria-controls="panel-learner" data-target="learner" class="tab min-tap rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white focus:outline-none aria-selected:bg-[#1e3a8a] aria-selected:text-white data-[active=true]:bg-[#1e3a8a] data-[active=true]:text-white">Learner Dashboard</button></li>
+        <li><button id="tab-educator" role="tab" aria-selected="false" aria-controls="panel-educator" data-target="educator" class="tab min-tap rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white focus:outline-none">Educator Dashboard</button></li>
+        <li><button id="tab-admin" role="tab" aria-selected="false" aria-controls="panel-admin" data-target="admin" class="tab min-tap rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white focus:outline-none">Admin Dashboard</button></li>
+      </ul>
+    </nav>
+    <div class="flex items-center gap-2">
+      <button class="relative min-tap grid place-items-center rounded-full p-2 hover:bg-slate-100" aria-label="Notifications, 3 new">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4a4 4 0 0 0-4 4v3.26a1 1 0 0 1-.3.71L6.2 13.5A2 2 0 0 0 6 14.91V16h12v-1.09a2 2 0 0 0-.2-.91l-1.5-1.53a1 1 0 0 1-.3-.71V8a4 4 0 0 0-4-4Z" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M9.5 18.5a2.5 2.5 0 0 0 5 0" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
+        <span class="absolute -top-0.5 -right-0.5 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#0d9488] px-1 text-[11px] font-semibold text-white">3</span>
+      </button>
+      <button class="min-tap flex items-center gap-2 rounded-full p-1 pr-3 hover:bg-slate-100" aria-label="Profile menu">
+        <span class="grid h-8 w-8 place-items-center rounded-full bg-[#1e3a8a] text-sm font-semibold text-white">J</span>
+        <span class="hidden text-sm font-medium sm:inline">Jones</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+  <!-- LEARNER -->
+  <section id="panel-learner" role="tabpanel" aria-labelledby="tab-learner" class="">
+    <div class="flex flex-col gap-6 lg:flex-row">
+      <aside class="lg:w-56">
+        <nav aria-label="Learner navigation" class="card rounded-2xl border border-slate-200 bg-white p-3">
+          <ul class="space-y-1 text-sm">
+            <li><a class="flex min-tap items-center gap-3 rounded-xl bg-slate-900 px-3 py-2 font-medium text-white" href="#"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 12l9-8 9 8v8a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2v-8Z" stroke="currentColor" stroke-width="1.6"/></svg>Dashboard</a></li>
+            <li><a class="flex min-tap items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50" href="#">My Courses</a></li>
+            <li><a class="flex min-tap items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50" href="#">Progress</a></li>
+            <li><a class="flex min-tap items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50" href="#">Study Groups</a></li>
+            <li><a class="flex min-tap items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50" href="#">Help</a></li>
+          </ul>
+        </nav>
+      </aside>
+
+      <div class="min-w-0 flex-1">
+        <nav aria-label="Breadcrumb" class="mb-1 text-sm text-slate-500">
+          <ol class="flex items-center gap-1">
+            <li><a href="#" class="hover:underline">Home</a></li><li aria-hidden="true">›</li>
+            <li><a href="#" class="hover:underline">HCI</a></li><li aria-hidden="true">›</li>
+            <li aria-current="page" class="text-slate-700">Module 3</li>
+          </ol>
+        </nav>
+        <div class="mb-4 flex items-start justify-between gap-3">
+          <h1 class="text-2xl font-semibold">Welcome back, Jones</h1>
+          <div class="hidden items-center gap-2 sm:flex">
+            <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">Online</span>
+          </div>
+        </div>
+
+        <!-- Quick Jump -->
+        <div class="card mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <label for="quickSearch" class="mb-2 block text-sm font-medium">Quick-Jump Search</label>
+          <div class="relative">
+            <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="m21 21-4.2-4.2" stroke="currentColor" stroke-width="1.6"/></svg>
+            <input id="quickSearch" type="search" placeholder="Search courses, materials..." class="min-tap w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-[15px] shadow-sm placeholder:text-slate-400 focus:border-[#1e3a8a] focus:ring-2 focus:ring-[#1e3a8a]/20">
+          </div>
+          <p class="mt-2 text-xs text-slate-500">Tip: Press “/” to focus search.</p>
+        </div>
+
+        <div class="grid gap-5 md:grid-cols-3">
+          <!-- To-Do -->
+          <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:col-span-1">
+            <h2 class="mb-3 text-base font-semibold">To-Do List</h2>
+            <ul class="space-y-3 text-[15px]">
+              <li class="flex items-start gap-3">
+                <span class="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-lg bg-amber-100 text-amber-700">!</span>
+                <div class="flex-1">
+                  <p class="font-medium">UX Principles Quiz</p>
+                  <p class="text-sm text-slate-600">Due Tomorrow • 10:00 AM</p>
+                </div>
+                <button class="min-tap rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs hover:bg-slate-50">Start</button>
+              </li>
+              <li class="flex items-start gap-3">
+                <span class="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-lg bg-sky-100 text-sky-700">•</span>
+                <div class="flex-1">
+                  <p class="font-medium">HCI Reading</p>
+                  <p class="text-sm text-slate-600">Due Friday • Chapter 3</p>
+                </div>
+                <button class="min-tap rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs hover:bg-slate-50">Open</button>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Gamified Progress -->
+          <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:col-span-2">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <h2 class="text-base font-semibold">Gamified Progress Tracker</h2>
+              <div class="flex items-center gap-2 text-sm">
+                <span class="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2.5 py-1 font-medium text-orange-700 ring-1 ring-inset ring-orange-200">7 day streak 🔥</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2.5 py-1 font-medium text-violet-700 ring-1 ring-inset ring-violet-200">3 badges</span>
+              </div>
+            </div>
+            <div class="mt-4 grid grid-cols-1 items-center gap-6 sm:grid-cols-3">
+              <div class="sm:col-span-1">
+                <div class="relative mx-auto aspect-square w-36">
+                  <canvas id="skillsDonut" width="144" height="144" aria-label="Skills mastered 12 of 20"></canvas>
+                  <div class="pointer-events-none absolute inset-0 grid place-items-center">
+                    <div class="text-center">
+                      <div class="text-2xl font-semibold">12/20</div>
+                      <div class="text-xs text-slate-500">skills</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-center gap-3 sm:col-span-2">
+                <div class="flex -space-x-2">
+                  <span title="Explorer" class="grid h-10 w-10 place-items-center rounded-full border-2 border-white bg-teal-600 text-white shadow">★</span>
+                  <span title="Analyst" class="grid h-10 w-10 place-items-center rounded-full border-2 border-white bg-[#1e3a8a] text-white shadow">◆</span>
+                  <span title="Collaborator" class="grid h-10 w-10 place-items-center rounded-full border-2 border-white bg-emerald-600 text-white shadow">✦</span>
+                </div>
+                <p class="text-sm text-slate-600">Keep going—complete 2 more activities to unlock “Synthesizer”.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Course Cards -->
+        <div class="mt-6">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-base font-semibold">My Courses</h2>
+            <span class="text-xs text-slate-500" id="courseCount">3 results</span>
+          </div>
+          <div id="courseGrid" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <!-- Card 1 -->
+            <article class="card group relative rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" data-title="Human Computer Interaction">
+              <div class="mb-2 flex items-start justify-between">
+                <h3 class="pr-6 text-[17px] font-semibold leading-snug">Human Computer Interaction</h3>
+                <span title="Badge earned" class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-teal-600 text-white shadow-sm">🏅</span>
+              </div>
+              <p class="mb-3 text-sm text-slate-600">Module 3 • Affordances</p>
+              <div class="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                <div class="h-2 rounded-full bg-[#1e3a8a]" style="width:65%"></div>
+              </div>
+              <div class="mt-2 flex items-center justify-between text-xs text-slate-600"><span>Progress</span><span class="font-medium">65%</span></div>
+              <div class="mt-4 flex gap-2">
+                <button class="min-tap rounded-xl bg-[#1e3a8a] px-3 py-2 text-sm font-medium text-white hover:opacity-90">Continue</button>
+                <button class="min-tap rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Syllabus</button>
+              </div>
+            </article>
+            <!-- Card 2 -->
+            <article class="card relative rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" data-title="Research Methods">
+              <div class="mb-2 flex items-start justify-between">
+                <h3 class="pr-6 text-[17px] font-semibold leading-snug">Research Methods</h3>
+                <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700">◎</span>
+              </div>
+              <p class="mb-3 text-sm text-slate-600">Week 2 • Sampling</p>
+              <div class="h-2 w-full overflow-hidden rounded-full bg-slate-200"><div class="h-2 rounded-full bg-[#1e3a8a]" style="width:40%"></div></div>
+              <div class="mt-2 flex items-center justify-between text-xs text-slate-600"><span>Progress</span><span class="font-medium">40%</span></div>
+              <div class="mt-4 flex gap-2">
+                <button class="min-tap rounded-xl bg-[#1e3a8a] px-3 py-2 text-sm font-medium text-white hover:opacity-90">Continue</button>
+                <button class="min-tap rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Resources</button>
+              </div>
+            </article>
+            <!-- Card 3 -->
+            <article class="card relative rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" data-title="Statistics">
+              <div class="mb-2 flex items-start justify-between">
+                <h3 class="pr-6 text-[17px] font-semibold leading-snug">Statistics</h3>
+                <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500 text-white">★</span>
+              </div>
+              <p class="mb-3 text-sm text-slate-600">Unit 4 • Distributions</p>
+              <div class="h-2 w-full overflow-hidden rounded-full bg-slate-200"><div class="h-2 rounded-full bg-[#1e3a8a]" style="width:80%"></div></div>
+              <div class="mt-2 flex items-center justify-between text-xs text-slate-600"><span>Progress</span><span class="font-medium">80%</span></div>
+              <div class="mt-4 flex gap-2">
+                <button class="min-tap rounded-xl bg-[#1e3a8a] px-3 py-2 text-sm font-medium text-white hover:opacity-90">Continue</button>
+                <button class="min-tap rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Practice</button>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <!-- Adaptive Content Switcher -->
+        <div class="mt-6 card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-base font-semibold">Adaptive Content</h2>
+            <div role="tablist" aria-label="Content format" class="inline-flex rounded-xl bg-slate-100 p-1">
+              <button data-mode="text" class="mode min-tap rounded-lg px-3 py-1.5 text-sm font-medium aria-selected:bg-white aria-selected:shadow">Text</button>
+              <button data-mode="video" class="mode min-tap rounded-lg px-3 py-1.5 text-sm font-medium">Video+Captions</button>
+              <button data-mode="audio" class="mode min-tap rounded-lg px-3 py-1.5 text-sm font-medium">Audio</button>
+            </div>
+          </div>
+          <div id="modeContent" class="prose max-w-none text-[15px] leading-relaxed text-slate-800">
+            <p><strong>Affordance</strong> (HCI): the perceived and actual properties of an object that suggest how it can be used. A door handle affords pulling; a flat plate affords pushing. Good affordances reduce cognitive load.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Tutor -->
+    <button id="aiToggle" class="fixed bottom-6 right-6 z-40 grid h-14 w-14 place-items-center rounded-full bg-[#0d9488] text-white shadow-lg transition hover:brightness-110 focus:outline-none" aria-expanded="false" aria-controls="aiPanel" aria-label="Open AI Tutor">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h12a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-5 4v-4.5" stroke="white" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+    </button>
+    <section id="aiPanel" class="fixed bottom-24 right-6 z-40 hidden w-[350px] max-w-[92vw] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-label="AI Tutor" aria-modal="false">
+      <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <div class="flex items-center gap-2">
+          <span class="grid h-8 w-8 place-items-center rounded-lg bg-[#0d9488] text-white">AI</span>
+          <div>
+            <p class="text-sm font-semibold">LearnBridge Tutor</p>
+            <p class="text-xs text-slate-500">Ask about HCI concepts</p>
+          </div>
+        </div>
+        <button id="aiClose" class="min-tap rounded-lg p-2 hover:bg-slate-100" aria-label="Close">✕</button>
+      </div>
+      <div class="max-h-80 space-y-3 overflow-y-auto bg-slate-50 p-4 text-[14px]">
+        <div class="w-fit max-w-[85%] rounded-2xl bg-white px-3 py-2 shadow-sm ring-1 ring-slate-200">User: “Explain affordance”</div>
+        <div class="ml-auto w-fit max-w-[85%] rounded-2xl bg-[#1e3a8a] px-3 py-2 text-white shadow-sm">Affordance is what an interface suggests you can do with it—like a button that looks pressable. Let’s review this concept together with examples from doors, handles, and UI.</div>
+      </div>
+      <form class="flex items-center gap-2 border-t border-slate-200 p-3" onsubmit="event.preventDefault()">
+        <input class="min-tap w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Ask a question…">
+        <button class="min-tap rounded-xl bg-[#1e3a8a] px-3 py-2 text-sm font-medium text-white">Send</button>
+      </form>
+    </section>
+  </section>
+
+  <!-- EDUCATOR -->
+  <section id="panel-educator" role="tabpanel" aria-labelledby="tab-educator" class="hidden">
+    <div class="mb-4 flex items-center justify-between">
+      <h1 class="text-2xl font-semibold">Educator View</h1>
+      <button id="submitGradesBtn" class="min-tap rounded-xl bg-[#1e3a8a] px-4 py-2.5 text-sm font-semibold text-white hover:opacity-95">Submit Final Grades</button>
+    </div>
+
+    <div class="grid gap-5 lg:grid-cols-3">
+      <!-- Create Assessment -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+        <h2 class="mb-3 text-base font-semibold">Create Assessment</h2>
+        <form class="grid gap-3 sm:grid-cols-2">
+          <div class="sm:col-span-1">
+            <label class="mb-1 block text-sm font-medium" for="assessTitle">Title</label>
+            <input id="assessTitle" class="min-tap w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="e.g., Heuristics Quiz">
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium" for="assessType">Type</label>
+            <select id="assessType" class="min-tap w-full rounded-xl border border-slate-300 bg-white px-3 py-2">
+              <option>Quiz</option><option>Assignment</option><option>Project</option><option>Exam</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium" for="assessDue">Due date</label>
+            <input id="assessDue" type="date" class="min-tap w-full rounded-xl border border-slate-300 px-3 py-2">
+          </div>
+          <div class="sm:col-span-2">
+            <label class="mb-1 block text-sm font-medium">Materials</label>
+            <div id="dropZone" class="grid min-h-[96px] place-items-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-4 text-center text-sm text-slate-600">Drag & drop files here or <label class="cursor-pointer underline"><input id="fileInput" type="file" class="sr-only" multiple> browse</label></div>
+            <p id="fileList" class="mt-2 text-xs text-slate-500"></p>
+          </div>
+          <div class="sm:col-span-2 flex justify-end gap-2">
+            <button type="button" class="min-tap rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Save Draft</button>
+            <button type="submit" class="min-tap rounded-xl bg-[#0d9488] px-3 py-2 text-sm font-medium text-white hover:opacity-95" onclick="toast('Assessment created');return false;">Publish</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- My Courses -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 class="mb-3 text-base font-semibold">My Courses</h2>
+        <ul class="divide-y divide-slate-200 text-sm">
+          <li class="flex items-center justify-between py-2"><span>Human Computer Interaction</span><span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs">128 students</span></li>
+          <li class="flex items-center justify-between py-2"><span>Research Methods</span><span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs">94 students</span></li>
+          <li class="flex items-center justify-between py-2"><span>Statistics</span><span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs">112 students</span></li>
+        </ul>
+      </div>
+
+      <!-- Quick Feedback -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+        <h2 class="mb-3 text-base font-semibold">Quick Feedback</h2>
+        <div class="space-y-4">
+          <div class="rounded-xl border border-slate-200 p-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-sm"><span class="font-medium">A. Patel</span> — HCI Essay Draft</p>
+              <button class="fb-open min-tap rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs hover:bg-slate-50" data-target="fb1">Provide Feedback</button>
+            </div>
+            <div id="fb1" class="mt-3 hidden">
+              <div class="grid gap-3 md:grid-cols-2">
+                <div class="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+                  <p class="mb-2 font-medium">Student work (excerpt)</p>
+                  <p>“Affordances help users understand possible actions without instructions…”</p>
+                </div>
+                <div>
+                  <label class="mb-1 block text-xs font-medium" for="feedbackBox">Your comments</label>
+                  <textarea id="feedbackBox" class="h-24 w-full rounded-xl border border-slate-300 p-2 text-sm" placeholder="Type feedback…"></textarea>
+                  <div class="mt-1 flex items-center justify-between text-xs text-slate-500">
+                    <span id="saveStatus" aria-live="polite"></span>
+                    <button class="min-tap rounded-lg bg-[#1e3a8a] px-2.5 py-1.5 text-white" onclick="toast('Feedback sent')">Send</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-slate-200 p-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-sm"><span class="font-medium">M. Chen</span> — Research Methods Quiz</p>
+              <button class="fb-open min-tap rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs hover:bg-slate-50" data-target="fb2">Provide Feedback</button>
+            </div>
+            <div id="fb2" class="mt-3 hidden text-sm text-slate-600">No inline view needed for this demo.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Performance Overview -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 class="mb-3 text-base font-semibold">Performance Overview</h2>
+        <canvas id="classBar" height="180" aria-label="Class average per module"></canvas>
+        <p class="mt-2 text-xs text-slate-500">Average score across modules (HCI cohort).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ADMIN -->
+  <section id="panel-admin" role="tabpanel" aria-labelledby="tab-admin" class="hidden">
+    <div class="mb-4 flex items-center justify-between">
+      <h1 class="text-2xl font-semibold">Admin Console</h1>
+      <button id="addUserBtn" class="min-tap rounded-xl bg-[#0d9488] px-3 py-2 text-sm font-medium text-white hover:opacity-95">Add User</button>
+    </div>
+
+    <div class="grid gap-5 xl:grid-cols-3">
+      <!-- User Management -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-base font-semibold">User Management</h2>
+          <input id="userFilter" class="min-tap w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Filter users">
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs uppercase text-slate-500">
+              <tr><th class="px-3 py-2">Name</th><th class="px-3 py-2">Role</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Actions</th></tr>
+            </thead>
+            <tbody id="userTable" class="divide-y divide-slate-200">
+              <tr><td class="px-3 py-2">Jones, A.</td><td class="px-3 py-2">Learner</td><td class="px-3 py-2"><span class="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700 ring-1 ring-inset ring-emerald-200">Active</span></td><td class="px-3 py-2"><button class="min-tap rounded-lg border px-2 py-1 hover:bg-slate-50">Edit</button></td></tr>
+              <tr><td class="px-3 py-2">Patel, A.</td><td class="px-3 py-2">Learner</td><td class="px-3 py-2"><span class="rounded-full bg-amber-50 px-2 py-0.5 text-amber-700 ring-1 ring-inset ring-amber-200">Pending</span></td><td class="px-3 py-2"><button class="min-tap rounded-lg border px-2 py-1 hover:bg-slate-50">Edit</button></td></tr>
+              <tr><td class="px-3 py-2">Dr. Rivera</td><td class="px-3 py-2">Educator</td><td class="px-3 py-2"><span class="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700 ring-1 ring-inset ring-emerald-200">Active</span></td><td class="px-3 py-2"><button class="min-tap rounded-lg border px-2 py-1 hover:bg-slate-50">Edit</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Course Management -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 class="mb-3 text-base font-semibold">Course Management</h2>
+        <div class="grid gap-3">
+          <div class="rounded-xl border border-slate-200 p-3">
+            <p class="text-sm font-medium">Create new course</p>
+            <button class="mt-2 min-tap rounded-lg bg-[#1e3a8a] px-3 py-2 text-sm text-white" onclick="toast('Course wizard opened')">Start</button>
+          </div>
+          <div class="rounded-xl border border-slate-200 p-3">
+            <p class="text-sm font-medium">Update existing</p>
+            <div class="mt-2 flex gap-2">
+              <select class="min-tap w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm"><option>HCI</option><option>Research Methods</option><option>Statistics</option></select>
+              <button class="min-tap rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50" onclick="toast('Course updated')">Update</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Settings -->
+      <div class="card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-3">
+        <h2 class="mb-3 text-base font-semibold">System Settings</h2>
+        <div class="grid gap-6 md:grid-cols-3">
+          <div>
+            <p class="mb-2 text-sm font-medium">Accessibility</p>
+            <label class="flex min-tap cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-300 px-3 py-2">
+              <span>High Contrast Mode</span>
+              <input id="hcToggle" type="checkbox" class="h-5 w-9 appearance-none rounded-full bg-slate-300 outline-none transition before:ml-0.5 before:mt-0.5 before:block before:h-4 before:w-4 before:rounded-full before:bg-white before:transition checked:bg-[#0d9488] checked:before:translate-x-4">
+            </label>
+            <p class="mt-1 text-xs text-slate-500">Applies instantly across the app.</p>
+          </div>
+
+          <div>
+            <p class="mb-2 text-sm font-medium">Text size</p>
+            <div class="flex items-center gap-2">
+              <label class="flex items-center gap-1 text-sm"><input type="radio" name="txt" value="100" checked> 100%</label>
+              <label class="flex items-center gap-1 text-sm"><input type="radio" name="txt" value="150"> 150%</label>
+              <label class="flex items-center gap-1 text-sm"><input type="radio" name="txt" value="200"> 200%</label>
+            </div>
+            <p class="mt-1 text-xs text-slate-500">Resizes UI text live.</p>
+          </div>
+
+          <div>
+            <p class="mb-2 text-sm font-medium">Language</p>
+            <select id="langSel" class="min-tap w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+              <option>English (US)</option><option>Español</option><option>Français</option>
+            </select>
+            <p class="mt-1 text-xs text-slate-500">Demo only.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Confirmation Modal -->
+<div id="confirmModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+  <div class="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+    <h3 id="confirmTitle" class="text-lg font-semibold">Submit Final Grades?</h3>
+    <p class="mt-1 text-sm text-slate-600">Are you sure? This action cannot be undone.</p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button id="cancelGrades" class="min-tap rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50">Cancel</button>
+      <button id="confirmGrades" class="min-tap rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:opacity-95">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="pointer-events-none fixed bottom-6 left-1/2 z-50 hidden -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-lg"></div>
+
+<script>
+  // Tabs
+  const tabs = document.querySelectorAll('.tab');
+  const panels = {
+    learner: document.getElementById('panel-learner'),
+    educator: document.getElementById('panel-educator'),
+    admin: document.getElementById('panel-admin')
+  };
+  function activate(name){
+    tabs.forEach(t=>{
+      const on = t.dataset.target===name;
+      t.setAttribute('aria-selected', on?'true':'false');
+      t.dataset.active = on;
+    });
+    Object.entries(panels).forEach(([k,el])=>{ el.classList.toggle('hidden', k!==name); });
+    history.replaceState(null,'','#'+name);
+  }
+  tabs.forEach(t=> t.addEventListener('click', ()=> activate(t.dataset.target)));
+  // Deep-link
+  const hash = location.hash.replace('#',''); if(hash && panels[hash]) activate(hash);
+
+  // Quick search focus with '/'
+  const quick = document.getElementById('quickSearch');
+  document.addEventListener('keydown', (e)=>{ if(e.key==='/'){ e.preventDefault(); quick?.focus(); }});
+
+  // Filter courses
+  const courseGrid = document.getElementById('courseGrid');
+  const courseCount = document.getElementById('courseCount');
+  function filterCourses(q){
+    const cards=[...courseGrid.querySelectorAll('article')];
+    let visible=0;
+    cards.forEach(c=>{
+      const hit = c.dataset.title.toLowerCase().includes(q.trim().toLowerCase());
+      c.classList.toggle('hidden', !hit);
+      if(hit) visible++;
+    });
+    courseCount.textContent = visible + ' result' + (visible!==1?'s':'');
+  }
+  quick?.addEventListener('input', e=> filterCourses(e.target.value));
+
+  // Adaptive content
+  const modeBtns = document.querySelectorAll('.mode');
+  const modeContent = document.getElementById('modeContent');
+  const modes = {
+    text: `<p><strong>Affordance</strong> (HCI): the perceived and actual properties of an object that suggest how it can be used. A door handle affords pulling; a flat plate affords pushing. Good affordances reduce cognitive load.</p>`,
+    video: `<div class="aspect-video w-full overflow-hidden rounded-xl bg-slate-900 text-white grid place-items-center">
+              <div class="text-center">
+                <p class="text-sm opacity-80">Video player placeholder</p>
+                <p class="mt-1 text-lg font-semibold">Affordances in UI</p>
+                <label class="mt-3 inline-flex items-center gap-2 text-sm"><input type="checkbox" checked> <span>Captions on</span></label>
+              </div>
+            </div>`,
+    audio: `<div class="rounded-xl border border-slate-200 p-3">
+              <div class="h-12 w-full rounded bg-slate-100" aria-hidden="true"></div>
+              <p class="mt-2 text-sm"><strong>Transcript:</strong> “An affordance signals possible actions—press, drag, swipe—without instructions…”</p>
+            </div>`
+  };
+  modeBtns.forEach((b,i)=>{
+    b.setAttribute('aria-selected', i===0?'true':'false');
+    b.addEventListener('click', ()=>{
+      modeBtns.forEach(x=>x.setAttribute('aria-selected','false'));
+      b.setAttribute('aria-selected','true');
+      modeContent.innerHTML = modes[b.dataset.mode];
+    });
+  });
+
+  // Skills donut
+  const donut = document.getElementById('skillsDonut');
+  if(donut){
+    new Chart(donut, {
+      type:'doughnut',
+      data:{ labels:['Mastered','Remaining'], datasets:[{ data:[12,8], borderWidth:0, hoverOffset:4 }]},
+      options:{ cutout:'72%', plugins:{legend:{display:false}, tooltip:{enabled:false}}}
+    });
+  }
+
+  // AI Tutor
+  const aiToggle = document.getElementById('aiToggle');
+  const aiPanel = document.getElementById('aiPanel');
+  const aiClose = document.getElementById('aiClose');
+  function setAi(open){
+    aiPanel.classList.toggle('hidden', !open);
+    aiToggle.setAttribute('aria-expanded', open?'true':'false');
+  }
+  aiToggle.addEventListener('click', ()=> setAi(aiPanel.classList.contains('hidden')));
+  aiClose.addEventListener('click', ()=> setAi(false));
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') setAi(false); });
+
+  // Educator: file drop
+  const drop = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const fileList = document.getElementById('fileList');
+  function showFiles(files){
+    fileList.textContent = [...files].map(f=>f.name).join(', ') || '';
+  }
+  ;['dragenter','dragover'].forEach(ev=> drop?.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.add('ring-2','ring-[#0d9488]'); }));
+  ;['dragleave','drop'].forEach(ev=> drop?.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.remove('ring-2','ring-[#0d9488]'); }));
+  drop?.addEventListener('drop', e=> showFiles(e.dataTransfer.files));
+  fileInput?.addEventListener('change', e=> showFiles(e.target.files));
+
+  // Educator: quick feedback toggles
+  document.querySelectorAll('.fb-open').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const el = document.getElementById(btn.dataset.target);
+      el.classList.toggle('hidden');
+      btn.textContent = el.classList.contains('hidden') ? 'Provide Feedback' : 'Hide';
+    });
+  });
+
+  // Auto-save indicator
+  const fb = document.getElementById('feedbackBox');
+  const saveStatus = document.getElementById('saveStatus');
+  let saveTimer;
+  fb?.addEventListener('input', ()=>{
+    saveStatus.textContent = 'Saving…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(()=>{ saveStatus.textContent = 'Saved'; }, 2000);
+  });
+
+  // Class bar chart
+  const bar = document.getElementById('classBar');
+  if(bar){
+    new Chart(bar, {
+      type:'bar',
+      data:{ labels:['M1','M2','M3','M4','M5'], datasets:[{label:'Average %', data:[78,82,74,88,81]}]},
+      options:{ responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true, max:100}}}
+    });
+  }
+
+  // Confirm modal
+  const modal = document.getElementById('confirmModal');
+  const openModal = ()=>{ modal.classList.remove('hidden'); modal.classList.add('flex'); document.getElementById('cancelGrades').focus(); };
+  const closeModal = ()=>{ modal.classList.add('hidden'); modal.classList.remove('flex'); };
+  document.getElementById('submitGradesBtn')?.addEventListener('click', openModal);
+  document.getElementById('cancelGrades')?.addEventListener('click', closeModal);
+  document.getElementById('confirmGrades')?.addEventListener('click', ()=>{ closeModal(); toast('Grades submitted'); });
+
+  // Toast
+  const toastEl = document.getElementById('toast');
+  function toast(msg){
+    toastEl.textContent = msg;
+    toastEl.classList.remove('hidden');
+    toastEl.style.opacity = '1';
+    setTimeout(()=>{ toastEl.style.opacity='0'; setTimeout(()=>toastEl.classList.add('hidden'),200); }, 1800);
+  }
+  window.toast = toast;
+
+  // Admin: add user + filter
+  const userTable = document.getElementById('userTable');
+  document.getElementById('addUserBtn')?.addEventListener('click', ()=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="px-3 py-2">New User</td><td class="px-3 py-2">Learner</td><td class="px-3 py-2"><span class="rounded-full bg-slate-100 px-2 py-0.5">Invited</span></td><td class="px-3 py-2"><button class="min-tap rounded-lg border px-2 py-1 hover:bg-slate-50">Edit</button></td>`;
+    userTable.prepend(tr);
+    toast('User invited');
+  });
+  document.getElementById('userFilter')?.addEventListener('input', e=>{
+    const q = e.target.value.toLowerCase();
+    [...userTable.rows].forEach(r=>{
+      r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+
+  // Admin: high contrast
+  const hcToggle = document.getElementById('hcToggle');
+  hcToggle?.addEventListener('change', e=>{
+    document.body.classList.toggle('hc', e.target.checked);
+  });
+
+  // Admin: text size
+  document.querySelectorAll('input[name="txt"]').forEach(r=>{
+    r.addEventListener('change', e=>{
+      const pct = Number(e.target.value);
+      document.getElementById('app').style.fontSize = (16 * pct/100) + 'px';
+    });
+  });
+
+  // Keyboard focus ring helper for mouse users
+  (function(){
+    let usingMouse = false;
+    document.addEventListener('mousedown', ()=>{ usingMouse=true; document.body.classList.add('using-mouse'); });
+    document.addEventListener('keydown', (e)=>{ if(e.key==='Tab'){ usingMouse=false; document.body.classList.remove('using-mouse'); }});
+  })();
+</script>
+</body>
+</html>
